@@ -1,0 +1,74 @@
+package com.ycf.flink.orc.sample
+
+import java.time.{Instant, LocalDateTime, ZoneOffset}
+import java.util.Properties
+
+import com.etiantian.bigdata.JsonDeserializationSchema
+import com.ycf.flink.orc.{HiveOrcSink, RowTimeBucketer}
+import org.apache.flink.api.common.restartstrategy.RestartStrategies
+import org.apache.flink.runtime.state.filesystem.FsStateBackend
+import org.apache.flink.streaming.api.CheckpointingMode
+import org.apache.flink.streaming.api.environment.CheckpointConfig.ExternalizedCheckpointCleanup
+import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
+import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer011
+import org.json.JSONObject
+
+import scala.collection.convert.wrapAsJava._
+import org.apache.flink.api.scala._
+
+import scala.util.Random
+
+/**
+ * Hello world!
+ *
+ */
+object App {
+  def main(args: Array[String]): Unit = {
+    val properties = new Properties()
+//    properties.setProperty("bootstrap.servers", "cdh132:9092,cdh133:9092,cdh134:9092")
+    properties.setProperty("bootstrap.servers", "kfk0136.localdomain:9092,kfk0137.localdomain:9092")
+    properties.setProperty("group.id", Random.nextString(10))
+    properties.setProperty("auto.offset.reset", "latest")
+
+    val consumer011 = new FlinkKafkaConsumer011[String](
+      List("aixueOnline"),
+      new JsonDeserializationSchema(),
+      properties
+    ).setStartFromEarliest()
+
+    val senv = StreamExecutionEnvironment.getExecutionEnvironment
+    senv.enableCheckpointing(1000)
+    senv.getCheckpointConfig.setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE)
+    senv.getCheckpointConfig.setMaxConcurrentCheckpoints(1)
+//    senv.setStateBackend(new FsStateBackend(s"hdfs:///flink-checkpoints/test-flink-1_8"))
+    senv.getCheckpointConfig.enableExternalizedCheckpoints(ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION)//退出不删除checkpoint
+    senv.setRestartStrategy(RestartStrategies.noRestart())
+//    senv.setRestartStrategy(RestartStrategies.fixedDelayRestart(3, Time.of(5, TimeUnit.SECONDS)))
+    println(senv.getRestartStrategy.getDescription)
+
+    HiveOrcSink
+
+    val hiveOrcSink = new HiveOrcSink[City](
+      classOf[City], "flink_orc"
+    ).setBucketer(
+      new RowTimeBucketer[City]("c_date")
+    )
+
+//    senv.addSource(consumer011).map(new JSONObject(_)).map(new MapWithCheckPoint()).print()
+    senv.addSource(consumer011).map(x =>{
+      val json = new JSONObject(x.toLowerCase())
+      val value = new JSONObject(json.getString("value"))
+      val cityJson = value.getJSONObject("after")
+      new City(
+        cityJson.getLong("ref"),
+        cityJson.getLong("city_id"),
+        cityJson.getString("city_name"),
+        LocalDateTime.ofInstant(
+          Instant.ofEpochMilli(cityJson.getLong("c_time")), ZoneOffset.ofHours(8)
+        ).toLocalDate.toString
+      )
+    }).addSink(hiveOrcSink)
+
+    senv.execute("test_flink1.8")
+  }
+}
